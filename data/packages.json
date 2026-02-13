@@ -1,0 +1,12 @@
+[
+  {
+    "id": "06d44963-dfba-408a-9143-397442af3ca6",
+    "name": "Firefox",
+    "version": "1.0",
+    "filename": "06d44963-dfba-408a-9143-397442af3ca6_Firefox Installer.exe",
+    "sizeBytes": 383800,
+    "sha256": "dd677aa2a9c59fba1a9392c694f47785c5a2bad205f1d854c7954944d148f425",
+    "createdAt": "2026-02-13T19:32:58.224Z",
+    "typeHint": "exe"
+  }
+]
