@@ -8,5 +8,25 @@
     "sha256": "dd677aa2a9c59fba1a9392c694f47785c5a2bad205f1d854c7954944d148f425",
     "createdAt": "2026-02-13T19:32:58.224Z",
     "typeHint": "exe"
+  },
+  {
+    "id": "b41ab8a7-ce95-47ef-be20-1b3ba37166e9",
+    "name": "VoicemodInstaller_1.6.6-vyhbj9.exe",
+    "version": "",
+    "filename": "b41ab8a7-ce95-47ef-be20-1b3ba37166e9_VoicemodInstaller_1.6.6-vyhbj9.exe",
+    "sizeBytes": 6314440,
+    "sha256": "2e27f78db7897ce4ac6cf70c0ddd3de55305c4849d588961d7a5b65243792d7f",
+    "createdAt": "2026-02-13T20:02:05.968Z",
+    "typeHint": "exe"
+  },
+  {
+    "id": "8a3b4408-6aba-4d9b-b00d-80f2f64cdfeb",
+    "name": "Git",
+    "version": "1.0",
+    "filename": "8a3b4408-6aba-4d9b-b00d-80f2f64cdfeb_Git-2.52.0-64-bit.exe",
+    "sizeBytes": 66292520,
+    "sha256": "d8de7a3152266c8bb13577eab850ea1df6dccf8c2aa48be5b4a1c58b7190d62c",
+    "createdAt": "2026-02-13T20:42:37.516Z",
+    "typeHint": "exe"
   }
 ]

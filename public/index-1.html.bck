@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Internal Deployment</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .row { display:flex; gap:24px; align-items:flex-start; }
+    .card { border:1px solid #ccc; padding:12px; border-radius:10px; width: 420px; }
+    table { width:100%; border-collapse: collapse; }
+    td, th { border-bottom:1px solid #eee; padding:6px; font-size: 13px; }
+    button { padding:8px 10px; }
+    input { width: 100%; padding: 6px; margin: 4px 0; }
+    .muted { color:#666; font-size: 12px; }
+    .log { white-space: pre-wrap; background:#111; color:#ddd; padding:10px; border-radius:10px; height:140px; overflow:auto; }
+  </style>
+</head>
+<body>
+  <h2>Internal Deployment (Consent Required)</h2>
+  <div class="row">
+    <div class="card">
+      <h3>Upload Paket</h3>
+      <form id="uploadForm">
+        <label>Name</label>
+        <input name="name" placeholder="z.B. 7-Zip" />
+        <label>Version</label>
+        <input name="version" placeholder="z.B. 24.08" />
+        <label>Datei (MSI/EXE)</label>
+        <input type="file" name="file" required />
+        <button type="submit">Upload</button>
+        <div class="muted">Tipp: lieber MSI/MSIX in Schul-/VDI Umgebungen.</div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3>Clients</h3>
+      <table id="agentsTable">
+        <thead><tr><th></th><th>Hostname</th><th>User</th><th>LastSeen</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Pakete</h3>
+      <table id="pkgTable">
+        <thead><tr><th></th><th>Name</th><th>Version</th><th>SHA256</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <button id="installBtn">Install Request senden</button>
+      <div class="muted">Am Client erscheint ein Dialog: Nutzer muss zustimmen.</div>
+    </div>
+  </div>
+
+  <h3>Status Log</h3>
+  <div id="log" class="log"></div>
+
+<script>
+  const log = (s) => {
+    const el = document.getElementById('log');
+    el.textContent += s + "\n";
+    el.scrollTop = el.scrollHeight;
+  };
+
+  let agents = [];
+  let packages = [];
+
+  function renderAgents() {
+    const tb = document.querySelector('#agentsTable tbody');
+    tb.innerHTML = '';
+    agents.forEach(a => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="checkbox" class="agent" value="${a.id}"></td>
+        <td>${a.hostname}</td>
+        <td>${a.user || ''}</td>
+        <td>${new Date(a.lastSeen).toLocaleTimeString()}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  function renderPkgs() {
+    const tb = document.querySelector('#pkgTable tbody');
+    tb.innerHTML = '';
+    packages.forEach(p => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="radio" name="pkg" class="pkg" value="${p.id}"></td>
+        <td>${p.name}</td>
+        <td>${p.version || ''}</td>
+        <td style="font-family:monospace">${p.sha256.slice(0,12)}…</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!j.ok) return log('Upload failed: ' + JSON.stringify(j));
+    log('Uploaded: ' + j.pkg.name);
+  });
+
+  const ws = new WebSocket(`ws://${location.host}?role=dashboard`);
+  ws.onopen = () => log('dashboard connected');
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'agents') {
+      agents = msg.agents;
+      renderAgents();
+    } else if (msg.type === 'packages') {
+      packages = msg.packages;
+      renderPkgs();
+    } else if (msg.type === 'status') {
+      log(`[${msg.agentId}] ${msg.status} ${msg.detail || ''}`);
+    }
+  };
+
+  document.getElementById('installBtn').addEventListener('click', () => {
+    const targetAgentIds = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    const pkg = document.querySelector('input.pkg:checked')?.value;
+
+    if (!targetAgentIds.length) return log('Select at least 1 client');
+    if (!pkg) return log('Select a package');
+
+    ws.send(JSON.stringify({ type: 'install_request', targetAgentIds, packageId: pkg }));
+    log(`Install request sent: pkg=${pkg} targets=${targetAgentIds.length}`);
+  });
+</script>
+</body>
+</html>

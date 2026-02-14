@@ -1,3 +1,7 @@
+// =======================
+// deploy-server/server.js
+// Upload + Packages + Catalog + WS routing (install_request + install_app + validate_app)
+// =======================
 'use strict';
 
 const path = require('path');
@@ -10,24 +14,54 @@ const multer = require('multer');
 const WebSocket = require('ws');
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
-const AGENT_TOKEN = process.env.AGENT_TOKEN || 'change-me'; // Pre-Shared Token für Agents
+
+// Agents dürfen nur mit Token verbinden
+const AGENT_TOKEN = process.env.AGENT_TOKEN || 'supersecret';
+
+// Nur Admin darf Catalog erweitern
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'adminsecret';
 
 const app = express();
 app.use(express.json());
 
 const dataDir = path.join(__dirname, 'data');
 const pkgDir = path.join(dataDir, 'packages');
-const metaFile = path.join(dataDir, 'packages.json');
+const tmpDir = path.join(dataDir, 'tmp');
+const packagesFile = path.join(dataDir, 'packages.json');
+const catalogFile = path.join(dataDir, 'catalog.json');
 
 fs.mkdirSync(pkgDir, { recursive: true });
-if (!fs.existsSync(metaFile)) fs.writeFileSync(metaFile, JSON.stringify([] , null, 2));
+fs.mkdirSync(tmpDir, { recursive: true });
 
-function readPackages() {
-  return JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
+if (!fs.existsSync(packagesFile)) fs.writeFileSync(packagesFile, JSON.stringify([], null, 2));
+if (!fs.existsSync(catalogFile)) {
+  fs.writeFileSync(
+    catalogFile,
+    JSON.stringify(
+      [
+        { id: "Mozilla.Firefox", name: "Firefox", defaultScope: "user" },
+        { id: "7zip.7zip", name: "7-Zip", defaultScope: "user" },
+        { id: "VideoLAN.VLC", name: "VLC", defaultScope: "user" },
+        { id: "Notepad++.Notepad++", name: "Notepad++", defaultScope: "user" }
+      ],
+      null,
+      2
+    )
+  );
 }
-function writePackages(pkgs) {
-  fs.writeFileSync(metaFile, JSON.stringify(pkgs, null, 2));
+
+function readJson(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf-8'));
 }
+function writeJson(file, obj) {
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+}
+
+function readPackages() { return readJson(packagesFile); }
+function writePackages(pkgs) { writeJson(packagesFile, pkgs); }
+
+function readCatalog() { return readJson(catalogFile); }
+function writeCatalog(c) { writeJson(catalogFile, c); }
 
 function sha256File(filePath) {
   return new Promise((resolve, reject) => {
@@ -39,21 +73,22 @@ function sha256File(filePath) {
   });
 }
 
-// Static Web UI
+// -------- HTTP --------
+app.get('/health', (req, res) => res.json({ ok: true }));
+
 app.use('/', express.static(path.join(__dirname, 'public')));
 
-// Packages download
 app.use('/packages', express.static(pkgDir, {
   setHeaders(res) {
     res.setHeader('Content-Disposition', 'attachment');
   }
 }));
 
-// Upload endpoint
-const upload = multer({ dest: path.join(dataDir, 'tmp') });
+// Upload installer (EXE/MSI)
+const upload = multer({ dest: tmpDir });
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'no file' });
+    if (!req.file) return res.status(400).json({ ok: false, error: 'no file' });
 
     const original = req.file.originalname;
     const ext = path.extname(original).toLowerCase();
@@ -83,19 +118,49 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     writePackages(pkgs);
 
     broadcastDashboards({ type: 'packages', packages: pkgs });
-
     res.json({ ok: true, pkg });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: String(e) });
+    res.status(500).json({ ok: false, error: String(e) });
   }
 });
 
 app.get('/api/packages', (req, res) => {
-  res.json(readPackages());
+  res.json({ ok: true, packages: readPackages() });
 });
 
-// --- WS Server (Agents + Dashboards) ---
+// Catalog GET
+app.get('/api/catalog', (req, res) => {
+  res.json({ ok: true, catalog: readCatalog() });
+});
+
+// Catalog ADD (admin only)
+function requireAdmin(req, res, next) {
+  const token = req.header('x-admin-token') || '';
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'forbidden' });
+  next();
+}
+
+app.post('/api/catalog/add', requireAdmin, (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const name = String(req.body?.name || '').trim() || id;
+  const defaultScope = (String(req.body?.defaultScope || 'user').trim().toLowerCase() === 'machine') ? 'machine' : 'user';
+
+  if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
+
+  const catalog = readCatalog();
+  if (catalog.some(x => x.id.toLowerCase() === id.toLowerCase())) {
+    return res.json({ ok: true, catalog });
+  }
+
+  catalog.push({ id, name, defaultScope });
+  writeCatalog(catalog);
+
+  broadcastDashboards({ type: 'catalog', catalog });
+  res.json({ ok: true, catalog });
+});
+
+// -------- WS --------
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -131,18 +196,19 @@ wss.on('connection', (ws, req) => {
   const q = parseQuery(req.url || '/');
   const role = q.role || 'agent';
 
+  // Dashboard
   if (role === 'dashboard') {
     dashboards.add(ws);
 
-    // initial state
     ws.send(JSON.stringify({ type: 'packages', packages: readPackages() }));
+    ws.send(JSON.stringify({ type: 'catalog', catalog: readCatalog() }));
     ws.send(JSON.stringify({ type: 'agents', agents: listAgents() }));
 
     ws.on('message', (raw) => {
-      // Dashboard commands
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
+      // 1) Installer deploy (uploaded)
       if (msg.type === 'install_request') {
         const { targetAgentIds, packageId } = msg;
         const pkgs = readPackages();
@@ -153,7 +219,7 @@ wss.on('connection', (ws, req) => {
           const a = agents.get(agentId);
           if (!a || a.ws.readyState !== WebSocket.OPEN) continue;
 
-          const installMsg = {
+          a.ws.send(JSON.stringify({
             type: 'install_request',
             package: {
               id: pkg.id,
@@ -161,13 +227,41 @@ wss.on('connection', (ws, req) => {
               version: pkg.version,
               sha256: pkg.sha256,
               sizeBytes: pkg.sizeBytes,
-              // download via HTTP
               url: `/packages/${pkg.filename}`,
               typeHint: pkg.typeHint
             }
-          };
-          a.ws.send(JSON.stringify(installMsg));
+          }));
         }
+      }
+
+      // 2) Winget deploy (catalog)
+      if (msg.type === 'install_app') {
+        const { targetAgentIds, appId, scope } = msg;
+        const catalog = readCatalog();
+        const item = catalog.find(x => x.id === appId);
+        if (!item) return;
+
+        for (const agentId of targetAgentIds || []) {
+          const a = agents.get(agentId);
+          if (!a || a.ws.readyState !== WebSocket.OPEN) continue;
+
+          a.ws.send(JSON.stringify({
+            type: 'install_app',
+            app: { id: item.id, name: item.name },
+            scope: scope || item.defaultScope || 'user'
+          }));
+        }
+      }
+
+      // 3) Winget validate on selected agent (Variante A)
+      if (msg.type === 'validate_app') {
+        const { targetAgentId, appId } = msg;
+        if (!targetAgentId || !appId) return;
+
+        const a = agents.get(targetAgentId);
+        if (!a || a.ws.readyState !== WebSocket.OPEN) return;
+
+        a.ws.send(JSON.stringify({ type: 'validate_app', appId }));
       }
     });
 
@@ -175,7 +269,7 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  // Agents
+  // Agent connect
   const token = q.token || '';
   if (token !== AGENT_TOKEN) {
     ws.close(1008, 'invalid token');
@@ -197,7 +291,6 @@ wss.on('connection', (ws, req) => {
     if (a) a.lastSeen = nowMs();
 
     if (msg.type === 'status') {
-      // forward status to dashboards
       broadcastDashboards({ type: 'status', agentId, status: msg.status, detail: msg.detail || '' });
     }
   });
@@ -209,6 +302,8 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[server] http://0.0.0.0:${PORT}`);
-  console.log(`[ws]    ws://0.0.0.0:${PORT}  (role=agent|dashboard)`);
+  console.log(`[http]   http://0.0.0.0:${PORT}`);
+  console.log(`[ws]     ws://0.0.0.0:${PORT} (role=agent|dashboard)`);
+  console.log(`[health] http://0.0.0.0:${PORT}/health`);
 });
+

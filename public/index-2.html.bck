@@ -1,0 +1,265 @@
+<!-- =======================
+     deploy-server/public/index.html
+     (Upload + Winget Catalog add/search + Deploy)
+     ======================= -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Internal Deployment</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .row { display:flex; gap:24px; align-items:flex-start; flex-wrap: wrap; }
+    .card { border:1px solid #ccc; padding:12px; border-radius:10px; width: 460px; }
+    table { width:100%; border-collapse: collapse; }
+    td, th { border-bottom:1px solid #eee; padding:6px; font-size: 13px; }
+    button { padding:8px 10px; }
+    input, select { width: 100%; padding: 6px; margin: 4px 0; }
+    .muted { color:#666; font-size: 12px; }
+    .log { white-space: pre-wrap; background:#111; color:#ddd; padding:10px; border-radius:10px; height:170px; overflow:auto; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+    .two { display:flex; gap:10px; }
+    .two > div { flex: 1; }
+  </style>
+</head>
+<body>
+  <h2>Internal Deployment</h2>
+
+  <div class="row">
+    <div class="card">
+      <h3>Upload Installer (EXE/MSI)</h3>
+      <form id="uploadForm">
+        <label>Name</label>
+        <input name="name" placeholder="z.B. Firefox Setup" />
+        <label>Version</label>
+        <input name="version" placeholder="z.B. 135.0" />
+        <label>Datei</label>
+        <input type="file" name="file" required />
+        <button type="submit">Upload</button>
+        <div class="muted">Upload bleibt drin. Deploy via “Installer Deploy”.</div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3>Clients</h3>
+      <table id="agentsTable">
+        <thead><tr><th></th><th>Hostname</th><th>User</th><th>LastSeen</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Installer Deploy</h3>
+      <table id="pkgTable">
+        <thead><tr><th></th><th>Name</th><th>Version</th><th>SHA</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <button id="deployInstallerBtn">Installer installieren</button>
+      <div class="muted">Sendet install_request (Download + Hash + Start).</div>
+    </div>
+
+    <div class="card">
+      <h3>Winget Catalog</h3>
+
+      <label>Suche</label>
+      <input id="catalogSearch" placeholder="z.B. firefox, vlc, 7zip..." />
+
+      <label>App auswählen</label>
+      <select id="appSelect">
+        <option value="">-- auswählen --</option>
+      </select>
+
+      <div class="two">
+        <div>
+          <label>Scope</label>
+          <select id="scopeSelect">
+            <option value="user">user</option>
+            <option value="machine">machine</option>
+          </select>
+        </div>
+        <div style="display:flex; align-items:end;">
+          <button id="deployWingetBtn" style="width:100%;">Winget installieren</button>
+        </div>
+      </div>
+
+      <hr/>
+
+      <h4>Winget App hinzufügen (Admin)</h4>
+      <label>Admin Token</label>
+      <input id="adminToken" placeholder="ADMIN_TOKEN" />
+
+      <label>winget id</label>
+      <input id="newAppId" placeholder="z.B. Mozilla.Firefox" />
+
+      <label>Name (optional)</label>
+      <input id="newAppName" placeholder="z.B. Firefox" />
+
+      <label>Default Scope</label>
+      <select id="newAppScope">
+        <option value="user">user</option>
+        <option value="machine">machine</option>
+      </select>
+
+      <button id="addCatalogBtn">Hinzufügen</button>
+
+      <div class="muted">
+        Hinweis: “Suchen” hier filtert deinen gespeicherten Catalog. Neue Apps fügst du mit winget id hinzu.
+      </div>
+    </div>
+  </div>
+
+  <h3>Status Log</h3>
+  <div id="log" class="log"></div>
+
+<script>
+  const log = (s) => {
+    const el = document.getElementById('log');
+    el.textContent += s + "\n";
+    el.scrollTop = el.scrollHeight;
+  };
+
+  let agents = [];
+  let packages = [];
+  let catalog = [];
+
+  function renderAgents() {
+    const tb = document.querySelector('#agentsTable tbody');
+    tb.innerHTML = '';
+    agents.forEach(a => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="checkbox" class="agent" value="${a.id}"></td>
+        <td>${a.hostname}</td>
+        <td>${a.user || ''}</td>
+        <td>${new Date(a.lastSeen).toLocaleTimeString()}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  function renderPkgs() {
+    const tb = document.querySelector('#pkgTable tbody');
+    tb.innerHTML = '';
+    packages.forEach(p => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="radio" name="pkg" class="pkg" value="${p.id}"></td>
+        <td>${p.name}</td>
+        <td>${p.version || ''}</td>
+        <td class="mono">${p.sha256.slice(0,12)}…</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  function renderCatalog(filtered = null) {
+    const list = filtered || catalog;
+    const sel = document.getElementById('appSelect');
+    sel.innerHTML = `<option value="">-- auswählen --</option>`;
+    list.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.name} (${a.id})`;
+      opt.dataset.scope = a.defaultScope || "user";
+      sel.appendChild(opt);
+    });
+  }
+
+  document.getElementById('catalogSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return renderCatalog();
+
+    const filtered = catalog.filter(a =>
+      (a.id || '').toLowerCase().includes(q) ||
+      (a.name || '').toLowerCase().includes(q)
+    );
+    renderCatalog(filtered);
+  });
+
+  document.getElementById('appSelect').addEventListener('change', () => {
+    const sel = document.getElementById('appSelect');
+    const opt = sel.options[sel.selectedIndex];
+    const def = opt?.dataset?.scope || "user";
+    document.getElementById('scopeSelect').value = def;
+  });
+
+  // Upload installer
+  document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!j.ok) return log('Upload failed: ' + JSON.stringify(j));
+    log('Uploaded: ' + j.pkg.name);
+  });
+
+  // Add catalog item (admin)
+  document.getElementById('addCatalogBtn').addEventListener('click', async () => {
+    const token = document.getElementById('adminToken').value.trim();
+    const id = document.getElementById('newAppId').value.trim();
+    const name = document.getElementById('newAppName').value.trim();
+    const defaultScope = document.getElementById('newAppScope').value;
+
+    if (!token) return log("Missing admin token");
+    if (!id) return log("Missing winget id");
+
+    const r = await fetch('/api/catalog/add', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': token
+      },
+      body: JSON.stringify({ id, name, defaultScope })
+    });
+
+    const j = await r.json();
+    if (!j.ok) return log("Add failed: " + JSON.stringify(j));
+    log("Catalog updated");
+  });
+
+  // Dashboard WS
+  const ws = new WebSocket(`ws://${location.host}?role=dashboard`);
+  ws.onopen = () => log('dashboard connected');
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+
+    if (msg.type === 'agents') {
+      agents = msg.agents || [];
+      renderAgents();
+    } else if (msg.type === 'packages') {
+      packages = msg.packages || [];
+      renderPkgs();
+    } else if (msg.type === 'catalog') {
+      catalog = msg.catalog || [];
+      renderCatalog();
+    } else if (msg.type === 'status') {
+      log(`[${msg.agentId}] ${msg.status} ${msg.detail || ''}`);
+    }
+  };
+
+  // Deploy installer
+  document.getElementById('deployInstallerBtn').addEventListener('click', () => {
+    const targetAgentIds = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    const pkg = document.querySelector('input.pkg:checked')?.value;
+
+    if (!targetAgentIds.length) return log('Select at least 1 client');
+    if (!pkg) return log('Select an installer package');
+
+    ws.send(JSON.stringify({ type: 'install_request', targetAgentIds, packageId: pkg }));
+    log(`install_request sent: pkg=${pkg} targets=${targetAgentIds.length}`);
+  });
+
+  // Deploy winget
+  document.getElementById('deployWingetBtn').addEventListener('click', () => {
+    const targetAgentIds = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    const appId = document.getElementById('appSelect').value;
+    const scope = document.getElementById('scopeSelect').value || "user";
+
+    if (!targetAgentIds.length) return log('Select at least 1 client');
+    if (!appId) return log('Select a winget app');
+
+    ws.send(JSON.stringify({ type: 'install_app', targetAgentIds, appId, scope }));
+    log(`install_app sent: app=${appId} scope=${scope} targets=${targetAgentIds.length}`);
+  });
+</script>
+</body>
+</html>
+

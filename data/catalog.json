@@ -1,0 +1,27 @@
+[
+  {
+    "id": "Mozilla.Firefox",
+    "name": "Firefox",
+    "defaultScope": "user"
+  },
+  {
+    "id": "7zip.7zip",
+    "name": "7-Zip",
+    "defaultScope": "user"
+  },
+  {
+    "id": "VideoLAN.VLC",
+    "name": "VLC",
+    "defaultScope": "user"
+  },
+  {
+    "id": "Notepad++.Notepad++",
+    "name": "Notepad++",
+    "defaultScope": "user"
+  },
+  {
+    "id": "Telegram.TelegramDesktop",
+    "name": "Telegram",
+    "defaultScope": "user"
+  }
+]

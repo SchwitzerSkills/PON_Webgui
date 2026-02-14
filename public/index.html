@@ -1,3 +1,7 @@
+<!-- =======================
+     File: public/index.html
+     FULL FILE (Upload + Installer Deploy + Winget Catalog + Validate + Validate&Add)
+     ======================= -->
 <!doctype html>
 <html>
 <head>
@@ -5,30 +9,35 @@
   <title>Internal Deployment</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
-    .row { display:flex; gap:24px; align-items:flex-start; }
-    .card { border:1px solid #ccc; padding:12px; border-radius:10px; width: 420px; }
+    .row { display:flex; gap:24px; align-items:flex-start; flex-wrap: wrap; }
+    .card { border:1px solid #ccc; padding:12px; border-radius:10px; width: 460px; }
     table { width:100%; border-collapse: collapse; }
     td, th { border-bottom:1px solid #eee; padding:6px; font-size: 13px; }
-    button { padding:8px 10px; }
-    input { width: 100%; padding: 6px; margin: 4px 0; }
+    button { padding:8px 10px; cursor:pointer; }
+    input, select { width: 100%; padding: 6px; margin: 4px 0; }
     .muted { color:#666; font-size: 12px; }
-    .log { white-space: pre-wrap; background:#111; color:#ddd; padding:10px; border-radius:10px; height:140px; overflow:auto; }
+    .log { white-space: pre-wrap; background:#111; color:#ddd; padding:10px; border-radius:10px; height:170px; overflow:auto; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+    .two { display:flex; gap:10px; }
+    .two > div { flex: 1; }
+    hr { border:0; border-top:1px solid #ddd; margin:12px 0; }
   </style>
 </head>
 <body>
-  <h2>Internal Deployment (Consent Required)</h2>
+  <h2>Internal Deployment</h2>
+
   <div class="row">
     <div class="card">
-      <h3>Upload Paket</h3>
+      <h3>Upload Installer (EXE/MSI)</h3>
       <form id="uploadForm">
         <label>Name</label>
-        <input name="name" placeholder="z.B. 7-Zip" />
+        <input name="name" placeholder="z.B. Firefox Setup" />
         <label>Version</label>
-        <input name="version" placeholder="z.B. 24.08" />
-        <label>Datei (MSI/EXE)</label>
+        <input name="version" placeholder="z.B. 135.0" />
+        <label>Datei</label>
         <input type="file" name="file" required />
         <button type="submit">Upload</button>
-        <div class="muted">Tipp: lieber MSI/MSIX in Schul-/VDI Umgebungen.</div>
+        <div class="muted">Upload bleibt drin.</div>
       </form>
     </div>
 
@@ -38,17 +47,66 @@
         <thead><tr><th></th><th>Hostname</th><th>User</th><th>LastSeen</th></tr></thead>
         <tbody></tbody>
       </table>
+      <div class="muted">Für “Validate” bitte GENAU 1 Client auswählen.</div>
     </div>
 
     <div class="card">
-      <h3>Pakete</h3>
+      <h3>Installer Deploy</h3>
       <table id="pkgTable">
-        <thead><tr><th></th><th>Name</th><th>Version</th><th>SHA256</th></tr></thead>
+        <thead><tr><th></th><th>Name</th><th>Version</th><th>SHA</th></tr></thead>
         <tbody></tbody>
       </table>
+      <button id="deployInstallerBtn" type="button">Installer installieren</button>
+      <div class="muted">Sendet install_request (Download + Hash + Start).</div>
+    </div>
 
-      <button id="installBtn">Install Request senden</button>
-      <div class="muted">Am Client erscheint ein Dialog: Nutzer muss zustimmen.</div>
+    <div class="card">
+      <h3>Winget Catalog</h3>
+
+      <label>Suche (filtert gespeicherten Catalog)</label>
+      <input id="catalogSearch" placeholder="z.B. firefox, vlc, 7zip..." />
+
+      <label>App auswählen</label>
+      <select id="appSelect">
+        <option value="">-- auswählen --</option>
+      </select>
+
+      <div class="two">
+        <div>
+          <label>Scope</label>
+          <select id="scopeSelect">
+            <option value="user">user</option>
+            <option value="machine">machine</option>
+          </select>
+        </div>
+        <div style="display:flex; align-items:end;">
+          <button id="deployWingetBtn" type="button" style="width:100%;">Winget installieren</button>
+        </div>
+      </div>
+
+      <button id="validateWingetBtn" type="button" style="margin-top:10px; width:100%;">Validate auf ausgewähltem Client</button>
+      <div class="muted">Agent führt winget show --id ... -e aus.</div>
+
+      <hr/>
+
+      <h3>Winget App hinzufügen (Admin)</h3>
+      <label>Admin Token</label>
+      <input id="adminToken" placeholder="ADMIN_TOKEN" />
+
+      <label>winget id</label>
+      <input id="newAppId" placeholder="z.B. Mozilla.Firefox" />
+
+      <label>Name (optional)</label>
+      <input id="newAppName" placeholder="z.B. Firefox" />
+
+      <label>Default Scope</label>
+      <select id="newAppScope">
+        <option value="user">user</option>
+        <option value="machine">machine</option>
+      </select>
+
+      <button id="validateAndAddBtn" type="button">Validieren & Hinzufügen</button>
+      <div class="muted">Validiert auf GENAU 1 ausgewähltem Client. Nur bei ✅ wird hinzugefügt.</div>
     </div>
   </div>
 
@@ -64,6 +122,13 @@
 
   let agents = [];
   let packages = [];
+  let catalog = [];
+
+  // appId -> { ok: boolean, detail: string, ts: number }
+  const validation = {};
+
+  // pendingAdd[appId] = { adminToken, name, defaultScope, targetAgentId, createdAt }
+  const pendingAdd = {};
 
   function renderAgents() {
     const tb = document.querySelector('#agentsTable tbody');
@@ -88,45 +153,204 @@
         <td><input type="radio" name="pkg" class="pkg" value="${p.id}"></td>
         <td>${p.name}</td>
         <td>${p.version || ''}</td>
-        <td style="font-family:monospace">${p.sha256.slice(0,12)}…</td>`;
+        <td class="mono">${(p.sha256 || '').slice(0,12)}…</td>`;
       tb.appendChild(tr);
     });
   }
 
+  function renderCatalog(filtered = null) {
+    const list = filtered || catalog;
+    const sel = document.getElementById('appSelect');
+    sel.innerHTML = `<option value="">-- auswählen --</option>`;
+
+    list.forEach(a => {
+      const v = validation[a.id];
+      const badge = v ? (v.ok ? " ✅" : " ❌") : "";
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.name} (${a.id})${badge}`;
+      opt.dataset.scope = a.defaultScope || "user";
+      sel.appendChild(opt);
+    });
+  }
+
+  document.getElementById('catalogSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return renderCatalog();
+
+    const filtered = catalog.filter(a =>
+      (a.id || '').toLowerCase().includes(q) ||
+      (a.name || '').toLowerCase().includes(q)
+    );
+    renderCatalog(filtered);
+  });
+
+  document.getElementById('appSelect').addEventListener('change', () => {
+    const sel = document.getElementById('appSelect');
+    const opt = sel.options[sel.selectedIndex];
+    const def = opt?.dataset?.scope || "user";
+    document.getElementById('scopeSelect').value = def;
+  });
+
+  // Upload installer
   document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const r = await fetch('/api/upload', { method: 'POST', body: fd });
-    const j = await r.json();
-    if (!j.ok) return log('Upload failed: ' + JSON.stringify(j));
-    log('Uploaded: ' + j.pkg.name);
+
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const j = await r.json();
+      if (!j.ok) return log('Upload failed: ' + JSON.stringify(j));
+      log('Uploaded: ' + j.pkg.name);
+    } catch (err) {
+      log('Upload exception: ' + String(err));
+    }
   });
 
+  // Dashboard WS
   const ws = new WebSocket(`ws://${location.host}?role=dashboard`);
+
   ws.onopen = () => log('dashboard connected');
-  ws.onmessage = (ev) => {
+
+  ws.onmessage = async (ev) => {
     const msg = JSON.parse(ev.data);
+
     if (msg.type === 'agents') {
-      agents = msg.agents;
+      agents = msg.agents || [];
       renderAgents();
-    } else if (msg.type === 'packages') {
-      packages = msg.packages;
+      return;
+    }
+
+    if (msg.type === 'packages') {
+      packages = msg.packages || [];
       renderPkgs();
-    } else if (msg.type === 'status') {
+      return;
+    }
+
+    if (msg.type === 'catalog') {
+      catalog = msg.catalog || [];
+      renderCatalog();
+      return;
+    }
+
+    if (msg.type === 'status') {
       log(`[${msg.agentId}] ${msg.status} ${msg.detail || ''}`);
+
+      // Validate result handling
+      if (msg.status === 'validate_ok' || msg.status === 'validate_fail') {
+        const m = (msg.detail || '').match(/appId=([^\s]+)/);
+        if (!m) return;
+
+        const appId = m[1];
+        validation[appId] = {
+          ok: msg.status === 'validate_ok',
+          detail: msg.detail || '',
+          ts: Date.now()
+        };
+        renderCatalog();
+
+        // If this validate was triggered by "Validate & Add"
+        const pending = pendingAdd[appId];
+        if (pending) {
+          delete pendingAdd[appId];
+
+          if (msg.status === 'validate_ok') {
+            log(`✅ validate ok -> adding to catalog: ${appId}`);
+
+            try {
+              const r = await fetch('/api/catalog/add', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-admin-token': pending.adminToken
+                },
+                body: JSON.stringify({
+                  id: appId,
+                  name: pending.name,
+                  defaultScope: pending.defaultScope
+                })
+              });
+              const j = await r.json();
+              if (!j.ok) {
+                log(`❌ add failed: ${JSON.stringify(j)}`);
+              } else {
+                log(`✅ added: ${appId}`);
+              }
+            } catch (e) {
+              log(`❌ add exception: ${String(e)}`);
+            }
+          } else {
+            log(`❌ validate failed -> NOT adding: ${appId}`);
+          }
+        }
+
+        return;
+      }
     }
   };
 
-  document.getElementById('installBtn').addEventListener('click', () => {
+  // Installer Deploy
+  document.getElementById('deployInstallerBtn').addEventListener('click', () => {
     const targetAgentIds = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
     const pkg = document.querySelector('input.pkg:checked')?.value;
 
     if (!targetAgentIds.length) return log('Select at least 1 client');
-    if (!pkg) return log('Select a package');
+    if (!pkg) return log('Select an installer package');
 
     ws.send(JSON.stringify({ type: 'install_request', targetAgentIds, packageId: pkg }));
-    log(`Install request sent: pkg=${pkg} targets=${targetAgentIds.length}`);
+    log(`install_request sent: pkg=${pkg} targets=${targetAgentIds.length}`);
+  });
+
+  // Winget Deploy
+  document.getElementById('deployWingetBtn').addEventListener('click', () => {
+    const targetAgentIds = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    const appId = document.getElementById('appSelect').value;
+    const scope = document.getElementById('scopeSelect').value || "user";
+
+    if (!targetAgentIds.length) return log('Select at least 1 client');
+    if (!appId) return log('Select a winget app');
+
+    ws.send(JSON.stringify({ type: 'install_app', targetAgentIds, appId, scope }));
+    log(`install_app sent: app=${appId} scope=${scope} targets=${targetAgentIds.length}`);
+  });
+
+  // Manual Validate (selected from catalog dropdown)
+  document.getElementById('validateWingetBtn').addEventListener('click', () => {
+    const selectedAgents = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    const appId = document.getElementById('appSelect').value;
+
+    if (selectedAgents.length !== 1) return log('Bitte GENAU 1 Client auswählen zum Validieren');
+    if (!appId) return log('Bitte eine App auswählen');
+
+    ws.send(JSON.stringify({ type: 'validate_app', targetAgentId: selectedAgents[0], appId }));
+    log(`validate_app sent: app=${appId} agent=${selectedAgents[0]}`);
+  });
+
+  // Validate & Add (Admin) — validate first, add only on ✅
+  document.getElementById('validateAndAddBtn').addEventListener('click', () => {
+    const selectedAgents = Array.from(document.querySelectorAll('input.agent:checked')).map(x => x.value);
+    if (selectedAgents.length !== 1) return log('Bitte GENAU 1 Client auswählen zum Validieren & Hinzufügen');
+
+    const adminToken = document.getElementById('adminToken').value.trim();
+    const appId = document.getElementById('newAppId').value.trim();
+    const name = document.getElementById('newAppName').value.trim();
+    const defaultScope = document.getElementById('newAppScope').value;
+
+    if (!adminToken) return log('Missing admin token');
+    if (!appId) return log('Missing winget id');
+
+    pendingAdd[appId] = {
+      adminToken,
+      name,
+      defaultScope,
+      targetAgentId: selectedAgents[0],
+      createdAt: Date.now()
+    };
+
+    ws.send(JSON.stringify({ type: 'validate_app', targetAgentId: selectedAgents[0], appId }));
+    log(`validate_app (pre-add) sent: app=${appId} agent=${selectedAgents[0]}`);
   });
 </script>
 </body>
 </html>
+
